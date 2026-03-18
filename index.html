@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vadodara Region Sahastraveer Live Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; transition: all 0.5s ease; min-height: 100vh; margin: 0; }
+        .light { background: linear-gradient(135deg, #ff4d4d, #f9d423); color: #000000; }
+        .dark { background: linear-gradient(135deg, #0f172a, #020617); color: #f8fafc; }
+        
+        .glass { 
+            backdrop-filter: blur(20px) saturate(160%);
+            background-color: rgba(255, 255, 255, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+        .dark .glass { background-color: rgba(15, 23, 42, 0.85); border: 1px solid rgba(255, 255, 255, 0.1); }
+
+        .table-container { max-height: 65vh; overflow: auto; border-radius: 12px; position: relative; }
+        table { border-collapse: separate; border-spacing: 0; width: 100%; }
+        
+        /* Sticky Elements */
+        thead th { position: sticky; top: 0; z-index: 40; background: #111827; color: white; }
+        .light thead th { background: #ffffff; color: #000000; }
+        
+        /* Rank and Name Sticky */
+        .sticky-col-1 { position: sticky; left: 0; z-index: 35; background: inherit; }
+        .sticky-col-2 { position: sticky; left: 50px; z-index: 35; background: inherit; border-right: 2px solid rgba(255,255,255,0.1); }
+
+        .num-cell:hover { background: rgba(99, 102, 241, 0.3); cursor: pointer; font-weight: bold; }
+        .kpi-card { min-height: 90px; }
+    </style>
+</head>
+<body class="dark">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+
+        const CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTR0BS2v9BdTO7UEMqCKnyVaODomy0v9hzPFgOfHb7x6aiPBu4MAp2vWd0TkASlM6ukAb1ePScz3v6s/pub?gid=0&single=true&output=csv";
+
+        const App = () => {
+            const [rawData, setRawData] = useState([]);
+            const [lastUpdated, setLastUpdated] = useState(new Date());
+            const [countdown, setCountdown] = useState(60);
+            const [isDarkMode, setIsDarkMode] = useState(true);
+            const [isMobile, setIsMobile] = useState(false);
+            const [tableView, setTableView] = useState('Division'); 
+            const [expandedRows, setExpandedRows] = useState({});
+            const [filters, setFilters] = useState({ div: '', sub: '', so: '', bo: '' });
+
+            // Robust cleaning for matching data values
+            const clean = (val) => (val || "").toString().trim().toUpperCase();
+
+            const fetchData = () => {
+                Papa.parse(CSV_URL, {
+                    download: true,
+                    header: true,
+                    skipEmptyLines: true,
+                    complete: (results) => {
+                        console.log("Raw Data Received:", results.data[0]); // Debugging
+                        if (results.data && results.data.length > 0) {
+                            setRawData(results.data);
+                            setLastUpdated(new Date());
+                            setCountdown(60);
+                        }
+                    }
+                });
+            };
+
+            useEffect(() => {
+                fetchData();
+                const timer = setInterval(() => setCountdown(c => c > 1 ? c - 1 : (fetchData(), 60)), 1000);
+                return () => clearInterval(timer);
+            }, []);
+
+            const exportExcel = (data, name) => {
+                const ws = XLSX.utils.json_to_sheet(data);
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, "Data");
+                XLSX.writeFile(wb, `${name.replace(/\s+/g, '_')}.xlsx`);
+            };
+
+            // Part A Logic with specific fixes for Oop-Sahastraveer
+            const getStats = (items) => {
+                const dormant = items.filter(r => clean(r.Milestone) === 'DORMANT BO').length;
+                // Catching "Oop-Sahastraveer" regardless of dashes/spaces
+                const oop = items.filter(r => clean(r.Milestone).includes('OOP')).length;
+                const potential = items.filter(r => clean(r.Milestone).includes('POTENTIAL')).length;
+                const sahastra = items.filter(r => clean(r.Milestone) === 'SAHASTRAVEER').length;
+                
+                const total = dormant + oop + potential + sahastra;
+                const netOop = oop + potential + sahastra;
+                
+                return {
+                    dormant, oop, potential, sahastra, total, netOop,
+                    pSahastra: total > 0 ? ((sahastra / total) * 100).toFixed(2) : "0.00",
+                    pNetOop: total > 0 ? ((netOop / total) * 100).toFixed(2) : "0.00"
+                };
+            };
+
+            const tableRows = useMemo(() => {
+                const key = tableView === 'Division' ? 'Division_Name' : 'Subdivision_Name';
+                const grouped = {};
+                rawData.forEach(row => {
+                    const groupVal = row[key];
+                    if (!groupVal) return;
+                    if (!grouped[groupVal]) grouped[groupVal] = [];
+                    grouped[groupVal].push(row);
+                });
+
+                return Object.entries(grouped).map(([name, rows]) => ({
+                    name, rows, ...getStats(rows)
+                })).sort((a, b) => parseFloat(b.pSahastra) - parseFloat(a.pSahastra));
+            }, [rawData, tableView]);
+
+            const kpiCols = [
+                'POSB', 'SBPRM', 'Seeding_linkage', 'GI_Premium', 'PLI_RPLI_Premium', 
+                'Mails_booking', 'Mails_booking_count', 'Connections', 'POSB_Pending', 
+                'SBPRM_Pending', 'Seeding_Linkage_Pending', 'GI_Premium_Pending', 
+                'PLI_RPLI_Pending', 'Mails_booking_Pending', 'Mails_booking_count_Pending', 'Connections_Pending'
+            ];
+
+            const filteredPartB = useMemo(() => {
+                return rawData.filter(d => 
+                    (!filters.div || d.Division_Name === filters.div) &&
+                    (!filters.sub || d.Subdivision_Name === filters.sub) &&
+                    (!filters.so || d.SO_Name === filters.so) &&
+                    (!filters.bo || d.BO_Name === filters.bo)
+                );
+            }, [rawData, filters]);
+
+            return (
+                <div className={`min-h-screen pb-10 ${isDarkMode ? 'dark' : 'light'} ${isMobile ? 'mobile-view' : ''}`}>
+                    
+                    <div className="p-4 sticky top-0 z-50">
+                        <header className="glass p-4 flex flex-col md:flex-row justify-between items-center rounded-2xl shadow-xl border border-white/20">
+                            <div>
+                                <h1 className="text-xl font-black uppercase tracking-tighter italic">Vadodara Region Sahastraveer Live Dashboard</h1>
+                                <div className="text-[10px] font-bold opacity-70 uppercase tracking-widest">
+                                    Refresh: {countdown}s | Status: {rawData.length > 0 ? '🟢 Online' : '🔴 Syncing...'}
+                                </div>
+                            </div>
+                            <div className="flex gap-2 mt-3 md:mt-0">
+                                <button onClick={() => setIsDarkMode(!isDarkMode)} className="px-3 py-1.5 bg-white/10 rounded text-[10px] font-bold">THEME</button>
+                                <button onClick={() => setIsMobile(!isMobile)} className="px-3 py-1.5 bg-white/10 rounded text-[10px] font-bold">VIEW</button>
+                                <button onClick={() => exportExcel(rawData, "Master_Backup")} className="px-3 py-1.5 bg-indigo-600 text-white rounded text-[10px] font-bold uppercase">Export All</button>
+                            </div>
+                        </header>
+                    </div>
+
+                    <main className="px-4 space-y-6">
+                        {/* Part A Section */}
+                        <section className="glass p-4 rounded-3xl">
+                            <div className="flex gap-2 mb-4">
+                                <button onClick={() => setTableView('Division')} className={`px-4 py-2 rounded-lg text-[10px] font-bold ${tableView === 'Division' ? 'bg-indigo-600 text-white' : 'bg-black/20'}`}>DIVISION VIEW</button>
+                                <button onClick={() => setTableView('Subdivision')} className={`px-4 py-2 rounded-lg text-[10px] font-bold ${tableView === 'Subdivision' ? 'bg-indigo-600 text-white' : 'bg-black/20'}`}>SUB-DIVISION VIEW</button>
+                            </div>
+
+                            <div className="table-container shadow-2xl">
+                                <table>
+                                    <thead>
+                                        <tr className="text-[10px] uppercase tracking-wider">
+                                            <th className="p-4 text-center sticky-col-1">Rank</th>
+                                            <th className="p-4 text-left sticky-col-2">Entity Name</th>
+                                            <th className="p-4 text-center">Dormant BO</th>
+                                            <th className="p-4 text-center">Oop-Sahastraveer</th>
+                                            <th className="p-4 text-center">Potential</th>
+                                            <th className="p-4 text-center">Sahastraveer</th>
+                                            <th className="p-4 text-center font-bold">Total BOs</th>
+                                            <th className="p-4 text-center">Net Oop</th>
+                                            <th className="p-4 text-center font-bold text-indigo-400">% Sahastra</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {tableRows.map((row, idx) => (
+                                            <React.Fragment key={row.name}>
+                                                <tr className={`border-b border-white/5 transition-colors ${isDarkMode ? 'hover:bg-white/5' : 'hover:bg-black/5'}`}>
+                                                    <td className="p-4 text-center font-bold opacity-30 sticky-col-1">{idx + 1}</td>
+                                                    <td className="p-4 font-bold text-indigo-500 cursor-pointer whitespace-nowrap sticky-col-2" onClick={() => setExpandedRows({...expandedRows, [row.name]: !expandedRows[row.name]})}>
+                                                        {expandedRows[row.name] ? '▼ ' : '▶ '} {row.name}
+                                                    </td>
+                                                    <td className="p-4 text-center num-cell font-mono" onClick={() => exportExcel(row.rows, row.name + "_Dormant")}>{row.dormant}</td>
+                                                    <td className="p-4 text-center num-cell font-mono" onClick={() => exportExcel(row.rows, row.name + "_Oop")}>{row.oop}</td>
+                                                    <td className="p-4 text-center num-cell font-mono" onClick={() => exportExcel(row.rows, row.name + "_Potential")}>{row.potential}</td>
+                                                    <td className="p-4 text-center num-cell font-mono" onClick={() => exportExcel(row.rows, row.name + "_Sahastraveer")}>{row.sahastra}</td>
+                                                    <td className="p-4 text-center num-cell font-bold" onClick={() => exportExcel(row.rows, row.name + "_Total")}>{row.total}</td>
+                                                    <td className="p-4 text-center num-cell font-bold" onClick={() => exportExcel(row.rows, row.name + "_NetOop")}>{row.netOop}</td>
+                                                    <td className="p-4 text-center font-black text-green-500 num-cell" onClick={() => exportExcel(row.rows, row.name + "_Performance")}>{row.pSahastra}%</td>
+                                                </tr>
+                                                {expandedRows[row.name] && (
+                                                    <tr>
+                                                        <td colSpan="9" className="p-4 bg-black/10">
+                                                            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
+                                                                {[...new Set(row.rows.map(r => tableView === 'Division' ? r.Subdivision_Name : r.SO_Name))].map(sub => (
+                                                                    <div key={sub} onClick={() => exportExcel(row.rows.filter(x => (tableView === 'Division' ? x.Subdivision_Name : x.SO_Name) === sub), sub)} 
+                                                                         className="p-2 glass rounded border border-white/10 text-[9px] font-bold flex justify-between cursor-pointer hover:bg-indigo-600/30">
+                                                                        <span className="truncate mr-1">{sub}</span>
+                                                                        <span>→</span>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                )}
+                                            </React.Fragment>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </section>
+
+                        {/* Part B Section */}
+                        <section className="glass p-6 rounded-3xl">
+                            <h2 className="text-xs font-black mb-4 uppercase tracking-widest">Part B: KPI Explorer</h2>
+                            <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-8">
+                                <select className="bg-black/20 p-3 rounded-lg text-xs font-bold" value={filters.div} onChange={(e) => setFilters({div: e.target.value, sub:'', so:'', bo:''})}>
+                                    <option value="">Division: All</option>
+                                    {[...new Set(rawData.map(d => d.Division_Name))].filter(Boolean).sort().map(d => <option key={d}>{d}</option>)}
+                                </select>
+                                <select className="bg-black/20 p-3 rounded-lg text-xs font-bold disabled:opacity-30" disabled={!filters.div} value={filters.sub} onChange={(e) => setFilters({...filters, sub: e.target.value, so:'', bo:''})}>
+                                    <option value="">Subdivision: All</option>
+                                    {[...new Set(rawData.filter(d => d.Division_Name === filters.div).map(d => d.Subdivision_Name))].filter(Boolean).sort().map(d => <option key={d}>{d}</option>)}
+                                </select>
+                                <select className="bg-black/20 p-3 rounded-lg text-xs font-bold disabled:opacity-30" disabled={!filters.sub} value={filters.so} onChange={(e) => setFilters({...filters, so: e.target.value, bo:''})}>
+                                    <option value="">SO: All</option>
+                                    {[...new Set(rawData.filter(d => d.Subdivision_Name === filters.sub).map(d => d.SO_Name))].filter(Boolean).sort().map(d => <option key={d}>{d}</option>)}
+                                </select>
+                                <select className="bg-black/20 p-3 rounded-lg text-xs font-bold disabled:opacity-30" disabled={!filters.so} value={filters.bo} onChange={(e) => setFilters({...filters, bo: e.target.value})}>
+                                    <option value="">BO: All</option>
+                                    {[...new Set(rawData.filter(d => d.SO_Name === filters.so).map(d => d.BO_Name))].filter(Boolean).sort().map(d => <option key={d}>{d}</option>)}
+                                </select>
+                            </div>
+
+                            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                                {kpiCols.map(col => {
+                                    const sum = filteredPartB.reduce((acc, curr) => acc + (parseFloat(curr[col]) || 0), 0);
+                                    return (
+                                        <div key={col} className="p-3 glass rounded-xl border-l-4 border-indigo-500 kpi-card flex flex-col justify-center">
+                                            <div className="text-[8px] uppercase font-black opacity-50 mb-1 leading-none">{col.replace(/_/g, ' ')}</div>
+                                            <div className="text-base font-mono font-bold truncate">
+                                                {sum % 1 === 0 ? sum.toLocaleString() : sum.toFixed(2)}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </section>
+                    </main>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
